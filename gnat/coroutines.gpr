@@ -1,0 +1,20 @@
+--  Copyright (c) 2019 Maxim Reznik <reznikmm@gmail.com>
+--
+--  SPDX-License-Identifier: MIT
+--  License-Filename: LICENSE
+-------------------------------------------------------------
+
+project Coroutines is
+
+   for Languages use ("Ada", "C");
+   for Source_Dirs use ("../source");
+   for Object_Dir use "../.objs";
+
+   package Compiler is
+      for Switches ("ada") use
+        ("-gnata", "-g", "-gnatwae", "-gnaty", "-gnatW8");
+      for Switches ("c") use ("-g");
+   end Compiler;
+
+end Coroutines;
+
