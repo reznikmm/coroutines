@@ -8,7 +8,6 @@ with Ada.Characters.Latin_1;
 with Ada.Streams;
 with Ada.Strings.Fixed;
 with Ada.Text_IO;
-with Interfaces.C;
 
 with GNAT.Sockets;
 
@@ -65,18 +64,22 @@ procedure CR_Test is
       GNAT.Sockets.Send_Socket (Self.Socket, Data, Last);
       pragma Assert (Last = Data'Last);
 
-      Coroutines.EPoll.Watch
-        (Descriptor => Interfaces.C.int (GNAT.Sockets.To_C (Self.Socket)),
-         Event      => Coroutines.EPoll.Input,
-         Mode       => Coroutines.EPoll.Level);
-
-      Coroutines.Yield;
-
       declare
+         use type Coroutines.EPoll.Event_Kind_Set;
+
+         Socket_Input : Coroutines.EPoll.Event
+           (Coroutines.EPoll.FD (GNAT.Sockets.To_C (Self.Socket)),
+            Events => +Coroutines.EPoll.Input,
+            Mode   => Coroutines.EPoll.Level);
+
          Output : Ada.Streams.Stream_Element_Array (1 .. 4096);
       begin
+         Socket_Input.Track (True);
+         --  Suspend current coroutine unti the socket has input.
+         Coroutines.Yield;
+
          GNAT.Sockets.Receive_Socket (Self.Socket, Output, Last);
---      Code := 200;
+         --      Code := 200;
          Ada.Text_IO.Put_Line ("Last=" & (Last'Img));
          return Output (1 .. Last);
       end;

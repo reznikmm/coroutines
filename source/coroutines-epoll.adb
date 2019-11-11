@@ -4,26 +4,11 @@
 --  License-Filename: LICENSE
 -------------------------------------------------------------
 
-with Ada.Containers.Hashed_Maps;
-
 package body Coroutines.EPoll is
 
-   type Mapped_Data is record
-      Descriptor : FD;
-      Event      : EPoll.Event;
-      Mode       : EPoll.Mode;
-   end record;
-
-   package Coroutine_Maps is new Ada.Containers.Hashed_Maps
-     (Key_Type        => Coroutine_Access,
-      Element_Type    => Mapped_Data,
-      Hash            => Hash,
-      Equivalent_Keys => "=",
-      "="             => "=");
-
    type EPoll_Coroutine_Manager is new Coroutine_Manager with record
-      epfd : FD;
-      Map  : Coroutine_Maps.Map;
+      epfd  : FD;
+      Total : Natural := 0;
    end record;
 
    overriding procedure Next_To_Run
@@ -37,8 +22,8 @@ package body Coroutines.EPoll is
      with Import, Convention => C, External_Name => "epoll_create1";
 
    type epoll_event is record
-      events : Interfaces.Unsigned_32;
-      data : Coroutine_Access;
+      events : Event_Kind_Set;
+      data   : Coroutine_Access;
    end record
      with Convention => C, Pack;
 
@@ -84,6 +69,47 @@ package body Coroutines.EPoll is
    EPOLL_CTL_MOD : constant := 3;
    pragma Warnings (On);
 
+   Mapping : constant array (EPoll.Event_Kind) of Event_Kind_Set :=
+     (Input   => EPOLLIN,
+      Output  => EPOLLOUT,
+      Error   => EPOLLERR,
+      Close   => EPOLLHUP);
+
+   ---------
+   -- "+" --
+   ---------
+
+   function "+" (Left : Event_Kind) return Event_Kind_Set is
+   begin
+      return Mapping (Left);
+   end "+";
+
+   function "+"
+     (Left : Event_Kind_Set; Right : Event_Kind) return Event_Kind_Set is
+   begin
+      return Left or (+Right);
+   end "+";
+
+   -----------
+   -- "and" --
+   -----------
+
+   function "and" (Left : Event_Kind_Set; Right : Event_Kind) return Boolean is
+   begin
+      return (Left and (+Right)) /= 0;
+   end "and";
+
+   --------------
+   -- Finalize --
+   --------------
+
+   overriding procedure Finalize (Self  : in out Event) is
+   begin
+      if Self.Enabled then
+         Self.Track (False);
+      end if;
+   end Finalize;
+
    ----------------
    -- Initialize --
    ----------------
@@ -92,6 +118,7 @@ package body Coroutines.EPoll is
    begin
       Register_Manager (Manager'Access);
       Manager.epfd := epoll_create1 (EPOLL_CLOEXEC);
+      Manager.Total := 0;
    end Initialize;
 
    -----------------
@@ -109,7 +136,7 @@ package body Coroutines.EPoll is
    begin
       Value := null;
 
-      if not Self.Map.Is_Empty then
+      if Self.Total > 0 then
          Result := epoll_wait
            (epfd      => Self.epfd,
             events    => Event'Access,
@@ -122,50 +149,46 @@ package body Coroutines.EPoll is
       end if;
    end Next_To_Run;
 
-   ----------------
-   -- Stop_Watch --
-   ----------------
-
-   procedure Stop_Watch (Descriptor : FD) is
-   begin
-      null;
-   end Stop_Watch;
-
    -----------
-   -- Watch --
+   -- Track --
    -----------
 
-   procedure Watch
-     (Descriptor : FD;
-      Event      : EPoll.Event;
-      Mode       : EPoll.Mode)
+   procedure Track
+     (Self  : in out Event'Class;
+      Value : Boolean)
    is
       use type Interfaces.C.int;
-      use type Interfaces.Unsigned_32;
-      Mapping : constant array (EPoll.Event) of Interfaces.Unsigned_32 :=
-        (Input   => EPOLLIN,
-         Output  => EPOLLOUT,
-         Error   => EPOLLERR,
-         Close   => EPOLLHUP);
-      Value  : constant Coroutine_Access := Current_Coroutine;
-      Ev     : constant epoll_event :=
-        (Mapping (Event) + (if Mode = Edge then EPOLLET else 0),
-         Value);
+
+      Current  : constant Coroutine_Access := Current_Coroutine;
+      Ev       : constant epoll_event :=
+        (Self.Events + (if Self.Mode = Edge then EPOLLET else 0),
+         Current);
       Result : Interfaces.C.int;
    begin
-      Manager.Map.Insert
-        (Value,
-         (Descriptor => Descriptor,
-          Event      => Event,
-          Mode       => Mode));
+      if Self.Enabled = Value then
+         return;
+      end if;
 
-      Result := epoll_ctl
-        (epfd  => Manager.epfd,
-         op    => EPOLL_CTL_ADD,
-         fd    => Descriptor,
-         event => Ev);
+      if Value then
+         Manager.Total := Manager.Total + 1;
+
+         Result := epoll_ctl
+           (epfd  => Manager.epfd,
+            op    => EPOLL_CTL_ADD,
+            fd    => Self.FD,
+            event => Ev);
+      else
+         Manager.Total := Manager.Total - 1;
+
+         Result := epoll_ctl
+           (epfd  => Manager.epfd,
+            op    => EPOLL_CTL_DEL,
+            fd    => Self.FD,
+            event => Ev);
+      end if;
 
       pragma Assert (Result = 0);
-   end Watch;
+      Self.Enabled := Value;
+   end Track;
 
 end Coroutines.EPoll;

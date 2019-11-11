@@ -16,5 +16,9 @@ project Coroutines is
       for Switches ("c") use ("-g");
    end Compiler;
 
+   package Binder is
+      for Switches ("ada") use
+        ("-W8");
+   end Binder;
 end Coroutines;
 
