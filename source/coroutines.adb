@@ -10,168 +10,279 @@ with Interfaces.C;
 package body Coroutines is
 
    function Allocate_Context
-     (Link : System.Address;
+     (Link       : Context;
       Stack_Size : Interfaces.C.size_t;
-      Stack : System.Address;
-      Value : System.Address) return System.Address
+      Wrapper    : System.Address;
+      Code       : System.Address;
+      Argument   : System.Address) return Context
      with Import, Convention => C, External_Name => "allocate_context";
 
-   function malloc (size : Interfaces.C.size_t) return System.Address
-     with Import, Convention => C, External_Name => "malloc";
+   procedure Free_Context (Object : Context)
+     with Import, Convention => C, External_Name => "free_context";
 
-   procedure free (value : System.Address)
-     with Import, Convention => C, External_Name => "free";
-   pragma Unreferenced (free);
-
-   function swapcontext
-     (prev, next : System.Address) return Interfaces.C.int
+   function swapcontext (prev, next : Context) return Interfaces.C.int
    with Import => True, Convention => C, External_Name => "swapcontext";
 
-   procedure Jump (Target : System.Address)
-     with Export, Convention => C, External_Name => "jump_to_runable";
+   procedure Destroyer (Unused : System.Address) with Convention => C;
+   --  This procedure deallocates a finished coroutine
 
-   package Runable_Addr is new System.Address_To_Access_Conversions
-     (Object => Runable'Class);
+   function Next_Context return Context;
 
-   type No_Runable is new Runable with null record;
-   overriding procedure Run (Self : in out No_Runable);
+   Main    : Context;  --  Initial context
+   Current : Context;  --  Current coroutine
+   Destroy : Context;  --  Cleanup coroutine
 
-   ---------
-   -- Run --
-   ---------
+   Total   : Natural := 0;
+   --  Number of coroutines (excluding Main and Destroy)
 
-   overriding procedure Run (Self : in out No_Runable) is
-      pragma Unreferenced (Self);
+   -------------------
+   -- Generic_Start --
+   -------------------
+
+   procedure Generic_Start
+     (Runable    : not null access procedure (Argument : Argument_Type);
+      Stack_Size : System.Storage_Elements.Storage_Count;
+      Argument   : Argument_Type)
+   is
+      package Convert is new System.Address_To_Access_Conversions
+        (Object => Argument_Type);
+
+      procedure Run (Code, Argument : System.Address) with Convention => C;
+
+      ---------
+      -- Run --
+      ---------
+
+      procedure Run (Code, Argument : System.Address) is
+         procedure Proc (Argument : Argument_Type)
+           with Import, Address => Code;
+         --  Copy Argument to new stack
+         Copy : constant Argument_Type := Convert.To_Pointer (Argument).all;
+      begin
+         Proc (Copy);
+
+         --  return to Destroyer
+      exception
+         when others =>
+            null;
+      end Run;
+
+      Prev  : constant Context := Current;
+      Copy  : aliased Argument_Type := Argument;
+      Next  : Context;
+   begin
+      Next := Allocate_Context
+        (Link       => Destroy,
+         Stack_Size => Interfaces.C.size_t (Stack_Size),
+         Wrapper    => Run'Address,
+         Code       => Runable.all'Address,
+         Argument   => Copy'Address);
+
+      Total := Total + 1;
+
+      if Prev = Main then
+         --  Dont activate main context after Start
+         Current := Next;
+         pragma Assert (swapcontext (Prev, Current) in 0);
+      else
+         declare
+            Ready : Event_Id;
+         begin
+            Manager.Get_Always_Ready_Event (Ready);
+            Ready.Activate;
+            Current := Next;
+            pragma Assert (swapcontext (Prev, Current) in 0);
+            Ready.Deactivate;
+         end;
+      end if;
+   end Generic_Start;
+
+   ---------------
+   -- Destroyer --
+   ---------------
+
+   procedure Destroyer (Unused : System.Address) is
    begin
       loop
-         Yield;
+         Free_Context (Current);
+         Current := Destroy;
+         Total := Total - 1;
+         exit when Total = 0;
+         Yield (Wait => (1 .. 0 => <>));
       end loop;
-   end Run;
 
-   Dummy_Runable : aliased No_Runable;
-   Dummy_Size    : constant := 4096;
-   Dummy_Stack   : constant System.Address := malloc (Dummy_Size);
-   Dummy         : aliased Coroutine :=
-     (Ada.Finalization.Limited_Controlled with
-      Runable => Dummy_Runable'Access,
-      Destructor => null,
-      Stack_Size => Dummy_Size,
-      Started => True,
-      Context => Allocate_Context
-        (System.Null_Address,
-         Dummy_Size,
-         Dummy_Stack,
-         Runable_Addr.To_Address (Dummy_Runable'Access)),
-      Stack => Dummy_Stack);
+      --  Return to main context
+   end Destroyer;
 
-   Main          : aliased Coroutine :=
-     (Ada.Finalization.Limited_Controlled with
-      Runable => Dummy_Runable'Access,
-      Destructor => null,
-      Stack_Size => 0,
-      Started => True,
-      Context => Allocate_Context
-        (System.Null_Address,
-         0,
-         System.Null_Address,
-         System.Null_Address),
-      Stack => System.Null_Address);
+   ---------------------
+   -- Current_Context --
+   ---------------------
 
-   Current : not null Coroutine_Access := Main'Access;
-
-   Manager : Coroutine_Manager_Access;
-
-   -----------------------
-   -- Current_Coroutine --
-   -----------------------
-
-   function Current_Coroutine return not null Coroutine_Access is
+   function Current_Context return Context is
    begin
       return Current;
-   end Current_Coroutine;
+   end Current_Context;
 
    ----------
    -- Hash --
    ----------
 
-   function Hash (Self : Coroutine_Access) return Ada.Containers.Hash_Type is
+   function Hash (Self : Context) return Ada.Containers.Hash_Type is
    begin
-      if Self = null then
-         return 0;
-      else
-         return Ada.Containers.Hash_Type'Mod
-           (System.Storage_Elements.To_Integer (Self.all'Address));
-      end if;
+      return Ada.Containers.Hash_Type'Mod
+        (System.Storage_Elements.To_Integer (System.Address (Self)));
    end Hash;
 
-   ----------
-   -- Jump --
-   ----------
+   ----------------
+   -- Initialize --
+   ----------------
 
-   procedure Jump (Target : System.Address) is
-      Object : constant Runable_Addr.Object_Pointer :=
-        Runable_Addr.To_Pointer (Target);
+   procedure Initialize is
    begin
-      Object.Run;
-   end Jump;
+      Main := Allocate_Context
+        (Link       => Null_Context,
+         Stack_Size => 0,
+         Wrapper    => System.Null_Address,
+         Code       => System.Null_Address,
+         Argument   => System.Null_Address);
 
-   ----------------------
-   -- Register_Manager --
-   ----------------------
+      Current := Main;
 
-   procedure Register_Manager (Value : not null Coroutine_Manager_Access) is
+      Destroy := Allocate_Context
+        (Link       => Main,
+         Stack_Size => 4096,
+         Wrapper    => Destroyer'Address,
+         Code       => System.Null_Address,
+         Argument   => System.Null_Address);
+   end Initialize;
+
+   Queue : Context_Vectors.Vector;
+
+   ------------------
+   -- Next_Context --
+   ------------------
+
+   function Next_Context return Context is
+      Result : Context;
    begin
-      Manager := Value;
-   end Register_Manager;
+      while Queue.Is_Empty loop
+         Manager.New_Round (Queue, Timeout => 300.0);
+      end loop;
+
+      Result := Queue.Last_Element;
+      Queue.Delete_Last;
+
+      return Result;
+   end Next_Context;
 
    -----------
    -- Start --
    -----------
 
-   procedure Start (Self : in out Coroutine'Class) is
-      Stack_Size : constant Interfaces.C.size_t :=
-        Interfaces.C.size_t (Self.Stack_Size);
-      Runable : constant Runable_Addr.Object_Pointer :=
-        Runable_Addr.Object_Pointer (Self.Runable);
+   procedure Start
+     (Runable    : Runable_Code;
+      Stack_Size : System.Storage_Elements.Storage_Count)
+   is
+      procedure Run (Code, Unused : System.Address) with Convention => C;
+
+      ---------
+      -- Run --
+      ---------
+
+      procedure Run (Code, Unused : System.Address) is
+         procedure Proc with Import, Address => Code;
+      begin
+         Proc;
+
+         --  return to Destroyer
+      exception
+         when others =>
+            null;
+      end Run;
+
+      Prev  : constant Context := Current;
+      Next  : Context;
    begin
-      pragma Assert (not Self.Started);
+      Next := Allocate_Context
+        (Link       => Destroy,
+         Stack_Size => Interfaces.C.size_t (Stack_Size),
+         Wrapper    => Run'Address,
+         Code       => Runable.all'Address,
+         Argument   => System.Null_Address);
 
-      Self.Stack := malloc (Stack_Size);
-      Self.Context := Allocate_Context
-        (Link       => Main.Context,
-         Stack_Size => Stack_Size,
-         Stack      => Self.Stack,
-         Value      => Runable_Addr.To_Address (Runable));
+      Total := Total + 1;
 
-      Self.Started := True;
+      if Prev = Main then
+         --  Dont activate main context after Start
+         Current := Next;
+         pragma Assert (swapcontext (Prev, Current) in 0);
+      else
+         declare
+            Ready : Event_Id;
+         begin
+            Manager.Get_Always_Ready_Event (Ready);
+            Ready.Activate;
+            Current := Next;
+            pragma Assert (swapcontext (Prev, Current) in 0);
+            Ready.Deactivate;
+         end;
+      end if;
    end Start;
-
-   ---------------
-   -- Switch_To --
-   ---------------
-
-   procedure Switch_To (Target : not null Coroutine_Access) is
-      Prev : constant Coroutine_Access := Current;
-   begin
-      pragma Assert (Target.Started);
-      Current := Target;
-      pragma Assert (swapcontext (Prev.Context, Target.Context) in 0);
-   end Switch_To;
 
    -----------
    -- Yield --
    -----------
 
    procedure Yield is
-      Next : Coroutine_Access;
+      Ready : Event_Id;
    begin
-      Manager.Next_To_Run (Next);
+      Manager.Get_Always_Ready_Event (Ready);
+      Yield ((1 => Ready));
+   end Yield;
 
-      if Next = null then
-         Next := Dummy'Access;
+   -----------
+   -- Yield --
+   -----------
+
+   procedure Yield (Wait : Event_Id) is
+   begin
+      Yield ((1 => Wait));
+   end Yield;
+
+   -----------
+   -- Yield --
+   -----------
+
+   procedure Yield
+     (Wait   : Event_Id_Array := (1 .. 0 => <>);
+      Result : access Natural := null)
+   is
+      Prev : constant Context := Current;
+   begin
+      for J of Wait loop
+         J.Activate;
+      end loop;
+
+      Current := Next_Context;
+
+      if Prev /= Current then
+         pragma Assert (swapcontext (Prev, Current) in 0);
       end if;
 
-      Switch_To (Next);
+      if Result /= null then
+         Result.all := 0;
+
+         for J in Wait'Range loop
+            if Wait (J).Ready then
+               Result.all := J;
+               exit;
+            end if;
+         end loop;
+      end if;
+
+      for J of Wait loop
+         J.Deactivate;
+      end loop;
    end Yield;
 
 end Coroutines;

@@ -4,15 +4,21 @@
 --  License-Filename: LICENSE
 -------------------------------------------------------------
 
+with Server_Test_Proc;
+
 with Coroutines.Polling;
 with Coroutines.Timeouts;
 
-with CR_Test_Proc;
+with TCP_Servers;
 
-procedure CR_Test is
+procedure Server_Test is
 begin
    Coroutines.Initialize;
    Coroutines.Polling.Initialize;
    Coroutines.Timeouts.Initialize;
-   Coroutines.Start (CR_Test_Proc'Access, 40_000);
-end CR_Test;
+
+   TCP_Servers.Listen_Port
+     (Port  => 12345,
+      Run   => Server_Test_Proc'Access,
+      Stack => 40_960);
+end Server_Test;

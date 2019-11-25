@@ -4,11 +4,11 @@ project Examples is
 
    for Source_Dirs use ("../examples");
    for Object_Dir use "../.objs/examples/";
-   for Main use ("cr_test");
+   for Main use ("timeout_test", "server_test", "cr_test");
 
    package Compiler is
-      for Switches ("ada") use
-        ("-gnata", "-g", "-gnatwae", "-gnaty", "-gnatW8");
+      for Switches ("ada") use ("-gnata", "-g", "-gnatwae", "-gnaty", "-gnatW8");
    end Compiler;
 
 end Examples;
+

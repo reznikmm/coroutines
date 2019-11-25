@@ -3,75 +3,95 @@
 --  SPDX-License-Identifier: MIT
 --  License-Filename: LICENSE
 -------------------------------------------------------------
+--
+--  Coroutine is a basic components for non-preemptive multitasking.
+--
 
 with System.Storage_Elements;
-private with Ada.Finalization;
-private with Ada.Containers;
+private with Ada.Containers.Vectors;
 
 package Coroutines is
 
-   type Runable is limited interface;
-   --  Runable object represents code to be executed under some coroutine.
+   pragma Preelaborate;
 
-   not overriding procedure Run (Self : in out Runable) is null;
-   --  Run is actual procedure to be executed under some coroutine.
-   --  Should not execute any blocking call (except Yield).
+   procedure Initialize;
+   --  Call this before use
 
-   type Runable_Access is access all Runable'Class;
-   --  A reference to Runable
+   type Runable_Code is not null access procedure;
+   --  A procedure to be executed as coroutine
 
-   procedure Yield;
-   --  Run can call Yield to suspend execution.
-
-   type Destructor is access procedure (Value : in out Runable_Access);
-   --  Destructor for runable object
-
-   type Coroutine
-     (Runable    : not null Runable_Access;
-      Destructor : Coroutines.Destructor;
-      Stack_Size : System.Storage_Elements.Storage_Count)
-        is tagged limited private;
-   --  Coroutine is a basice components for non-preemptive multitasking.
-   --  Runable is an actual code to be executed under the coroutine.
-   --  Destructor (if not null) will be called at coroutine finalization.
+   procedure Start
+     (Runable    : Runable_Code;
+      Stack_Size : System.Storage_Elements.Storage_Count);
+   --  Launch a new coroutine.
+   --  Runable is an actual code to be executed under the coroutine;
+   --  it should not execute any blocking call (except Yield).
    --  Stack_Size is size of stack dedicated to execute the coroutine.
 
-   type Coroutine_Access is access all Coroutine'Class
-     with Storage_Size => 0;
+   generic
+      type Argument_Type is private;
+   procedure Generic_Start
+     (Runable    : not null access procedure (Argument : Argument_Type);
+      Stack_Size : System.Storage_Elements.Storage_Count;
+      Argument   : Argument_Type);
+   --  Generic version of Start procedure. Runable should be library-level
+   --  procedure.
 
-   function Current_Coroutine return not null Coroutine_Access;
-   --  A reference to the coroutine that is currently running.
+   procedure Yield;
+   --  Runable procedure can call Yield to suspend execution. The coroutine
+   --  stay ready for execution.
 
-   procedure Start (Self : in out Coroutine'Class);
-   --  Launch the coroutine. Could be called only once for given object.
+   type Event_Id is private;
+   type Event_Id_Array is array (Positive range <>) of Event_Id;
 
-   procedure Switch_To (Target : not null Coroutine_Access);
-   --  Suspend execution of the current coroutine (like Yield) and switch to
-   --  given coroutine.
+   procedure Yield (Wait : Event_Id);
+   --  Runable procadure can call Yield to suspend execution until Wait event
+   --  happens.
+
+   procedure Yield
+     (Wait   : Event_Id_Array := (1 .. 0 => <>);
+      Result : access Natural := null);
+   --  Runable procadure can call Yield to suspend execution until one of event
+   --  on Wait happens. On resume Result is an index of the event_id. If Wait
+   --  is empty, then this Yield never returns.
 
 private
-   type Coroutine
-     (Runable    : not null Runable_Access;
-      Destructor : Coroutines.Destructor;
-      Stack_Size : System.Storage_Elements.Storage_Count) is
-        new Ada.Finalization.Limited_Controlled with
-   record
-      Started : Boolean := False;
-      Context : System.Address;
-      Stack   : System.Address;
-   end record;
+   type Event_Object is limited interface;
+   type Event_Id is access all Event_Object'Class;
+
+   not overriding procedure Activate (Self : in out Event_Object) is abstract;
+
+   not overriding function Ready
+     (Self : Event_Object) return Boolean is abstract;
+
+   not overriding procedure Deactivate
+     (Self : in out Event_Object) is abstract;
+
+   type Context is new System.Address;
+
+   function Null_Context return Context is (Context (System.Null_Address));
+
+   package Context_Vectors is new Ada.Containers.Vectors
+     (Index_Type   => Positive,
+      Element_Type => Context);
 
    type Coroutine_Manager is limited interface;
 
    type Coroutine_Manager_Access is access all Coroutine_Manager'Class;
 
-   not overriding procedure Next_To_Run
-     (Self  : in out Coroutine_Manager;
-      Value : out Coroutine_Access) is abstract;
+   not overriding procedure Get_Always_Ready_Event
+     (Self   : in out Coroutine_Manager;
+      Result : out Event_Id) is abstract;
 
-   procedure Register_Manager (Value : not null Coroutine_Manager_Access);
-   --  Add one more Coroutine_Manager.
+   not overriding procedure New_Round
+     (Self    : in out Coroutine_Manager;
+      Queue   : in out Context_Vectors.Vector;
+      Timeout : Duration) is null;
 
-   function Hash (Self : Coroutine_Access) return Ada.Containers.Hash_Type;
+   Manager : Coroutine_Manager_Access;
+
+   function Hash (Self : Context) return Ada.Containers.Hash_Type;
+
+   function Current_Context return Context;
 
 end Coroutines;

@@ -9,27 +9,40 @@
 #include <ucontext.h>
 #include <stdlib.h>
 #include <stdio.h>
-extern void jump_to_runable (void *);
+#include <signal.h>
 
 ucontext_t* allocate_context
   (ucontext_t * link,
   size_t stack_size,
-  void * stack,
-  void * runable)
+  void (*wrapper)(void *, void *),
+  void * code,
+  void * argument)
 {
   ucontext_t* result = malloc (sizeof(ucontext_t));
   getcontext (result);
   result->uc_link = link;
   result->uc_flags = 0;
-/*  result->uc_sigmask = 0; */
+  sigemptyset (&result->uc_sigmask);
   result->uc_stack.ss_size = stack_size;
-  result->uc_stack.ss_sp = stack;
   result->uc_stack.ss_flags = 0;
 
-  printf ("stack=%lx\n", (unsigned long)stack);
   if (stack_size != 0) {
-    makecontext (result, (void (*)()) &jump_to_runable, 1, runable);
+    result->uc_stack.ss_sp = malloc (stack_size);
+    makecontext (result, (void (*)()) wrapper, 2, code, argument);
+  }else{
+    result->uc_stack.ss_sp = 0;
   }
 
+  printf ("stack=%lx\n", (unsigned long)result->uc_stack.ss_sp);
+
   return result;
+}
+
+void free_context (ucontext_t* context)
+{
+  if (context->uc_stack.ss_size != 0) {
+    free (context->uc_stack.ss_sp);  /* ??? */
+  }
+
+  free (context);
 }
