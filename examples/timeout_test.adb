@@ -6,10 +6,12 @@
 
 with Coroutines;
 with Timeout_Proc;
+with Coroutines.Timeouts;
 
 procedure Timeout_Test is
 begin
    Coroutines.Initialize;
+   Coroutines.Timeouts.Initialize;
 
    Coroutines.Start
      (Runable    => Timeout_Proc'Access,

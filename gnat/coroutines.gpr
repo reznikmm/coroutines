@@ -6,19 +6,19 @@
 
 project Coroutines is
 
-   for Languages use ("Ada", "C");
+   Build_Dir := external ("BUILD", "../.objs");
+   for Languages use ("Ada", "C", "Asm");
    for Source_Dirs use ("../source");
-   for Object_Dir use "../.objs";
+   for Object_Dir use Build_Dir;
 
    package Compiler is
       for Switches ("ada") use
         ("-gnata", "-g", "-gnatwae", "-gnaty", "-gnatW8");
       for Switches ("c") use ("-g");
+      for Switches ("asm") use ("-g");
    end Compiler;
 
    package Binder is
-      for Switches ("ada") use
-        ("-W8");
+      for Switches ("ada") use ("-W8");
    end Binder;
 end Coroutines;
-

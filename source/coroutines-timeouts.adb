@@ -90,10 +90,16 @@ package body Coroutines.Timeouts is
 
    procedure Get_Always_Ready_Event
      (Self   : in out Timeout_Manager;
-      Result : out Event_Id) is
+      Result : out Event_Id)
+   is
+      pragma Unreferenced (Self);
    begin
       Result := Timeout (0.0);
    end Get_Always_Ready_Event;
+
+   ----------------
+   -- Initialize --
+   ----------------
 
    procedure Initialize is
    begin

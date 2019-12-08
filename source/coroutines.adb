@@ -7,32 +7,63 @@
 with System.Address_To_Access_Conversions;
 with Interfaces.C;
 
+with Coroutines.Polling;
+
 package body Coroutines is
 
-   function Allocate_Context
-     (Link       : Context;
-      Stack_Size : Interfaces.C.size_t;
-      Wrapper    : System.Address;
-      Code       : System.Address;
-      Argument   : System.Address) return Context
-     with Import, Convention => C, External_Name => "allocate_context";
+   --  void * create_stack (int size)
+   function create_context (size : Interfaces.C.int) return Context
+     with Import, Convention => C, External_Name => "create_context";
+   --  Allocate new stack with a header over it and guard page under it.
+   --  Return pointer to the header
 
-   procedure Free_Context (Object : Context)
+   --  init_context(context, code, arg1, arg2, cont)
+   procedure init_context
+     (Self     : Context;
+      Wrapper  : System.Address;
+      Code     : System.Address;
+      Argument : System.Address;
+      Cleanup  : Context)
+     with Import, Convention => C, External_Name => "init_context";
+   --  Initalize a context created by create_context function.
+   --  When this context gets execution control first time it calls
+   --  Wrapper (Code, Argument). When Wrapper returns it switches to
+   --  Cleanup context. The last switch doesn't modify Current variable.
+
+   procedure free_context (Object : Context)
      with Import, Convention => C, External_Name => "free_context";
+   --  Destroy context created by create_context function
 
-   function swapcontext (prev, next : Context) return Interfaces.C.int
-   with Import => True, Convention => C, External_Name => "swapcontext";
+   --  switch_context(context *from, context *to)
+   procedure swapcontext (prev, next : Context)
+     with Import => True, Convention => C, External_Name => "switch_context";
+   --  Suspend prev context execution and start executing next context
 
    procedure Destroyer (Unused : System.Address) with Convention => C;
-   --  This procedure deallocates a finished coroutine
+   --  This procedure deallocates a finished coroutine. It takes context of
+   --  the finished coroutine from Current variable.
 
    function Next_Context return Context;
+   --  Find next coroutine to execute.
 
-   Main    : Context;  --  Initial context
-   Current : Context;  --  Current coroutine
-   Destroy : Context;  --  Cleanup coroutine
+   procedure Run (Code, Unused : System.Address) with Convention => C;
+   --  A low level wrapper to launch parameterless coroutine.
 
-   Total   : Natural := 0;
+   type Destroy_Stack_Type is record
+      Stack         : Wide_Wide_String (1 .. 256);
+      Stack_Pointer : System.Address;
+   end record;
+   pragma No_Component_Reordering (Destroy_Stack_Type);
+
+   Destroy_Stack : Destroy_Stack_Type;  --  A stack for Destroy coroutine
+   Main_SP       : aliased System.Address;  --  A stack pointer for Main coro
+
+   Main          : Context := Context (Main_SP'Address); --  Main coroutine
+   Current       : Context;  --  Current coroutine
+   Destroy       : Context := Context (Destroy_Stack.Stack_Pointer'Address);
+   --  Cleanup coroutine
+
+   Total         : Natural := 0;
    --  Number of coroutines (excluding Main and Destroy)
 
    -------------------
@@ -48,6 +79,7 @@ package body Coroutines is
         (Object => Argument_Type);
 
       procedure Run (Code, Argument : System.Address) with Convention => C;
+      --  A low level wrapper to launch a coroutine.
 
       ---------
       -- Run --
@@ -69,21 +101,22 @@ package body Coroutines is
 
       Prev  : constant Context := Current;
       Copy  : aliased Argument_Type := Argument;
-      Next  : Context;
+      Next  : constant Context :=
+        create_context (Interfaces.C.int (Stack_Size));
    begin
-      Next := Allocate_Context
-        (Link       => Destroy,
-         Stack_Size => Interfaces.C.size_t (Stack_Size),
-         Wrapper    => Run'Address,
-         Code       => Runable.all'Address,
-         Argument   => Copy'Address);
+      init_context
+        (Self     => Next,
+         Wrapper  => Run'Address,
+         Code     => Runable.all'Address,
+         Argument => Copy'Address,
+         Cleanup  => Destroy);
 
       Total := Total + 1;
 
       if Prev = Main then
          --  Dont activate main context after Start
          Current := Next;
-         pragma Assert (swapcontext (Prev, Current) in 0);
+         swapcontext (Prev, Current);
       else
          declare
             Ready : Event_Id;
@@ -91,7 +124,7 @@ package body Coroutines is
             Manager.Get_Always_Ready_Event (Ready);
             Ready.Activate;
             Current := Next;
-            pragma Assert (swapcontext (Prev, Current) in 0);
+            swapcontext (Prev, Current);
             Ready.Deactivate;
          end;
       end if;
@@ -104,7 +137,7 @@ package body Coroutines is
    procedure Destroyer (Unused : System.Address) is
    begin
       loop
-         Free_Context (Current);
+         free_context (Current);
          Current := Destroy;
          Total := Total - 1;
          exit when Total = 0;
@@ -139,21 +172,18 @@ package body Coroutines is
 
    procedure Initialize is
    begin
-      Main := Allocate_Context
-        (Link       => Null_Context,
-         Stack_Size => 0,
-         Wrapper    => System.Null_Address,
-         Code       => System.Null_Address,
-         Argument   => System.Null_Address);
-
+      Main := Context (Main_SP'Address);
+      Destroy := Context (Destroy_Stack.Stack_Pointer'Address);
       Current := Main;
 
-      Destroy := Allocate_Context
-        (Link       => Main,
-         Stack_Size => 4096,
-         Wrapper    => Destroyer'Address,
-         Code       => System.Null_Address,
-         Argument   => System.Null_Address);
+      init_context
+        (Self     => Destroy,
+         Wrapper  => Destroyer'Address,
+         Code     => System.Null_Address,
+         Argument => System.Null_Address,
+         Cleanup  => Main);
+
+      Coroutines.Polling.Initialize;
    end Initialize;
 
    Queue : Context_Vectors.Vector;
@@ -175,6 +205,21 @@ package body Coroutines is
       return Result;
    end Next_Context;
 
+   ---------
+   -- Run --
+   ---------
+
+   procedure Run (Code, Unused : System.Address) is
+      procedure Proc with Import, Address => Code;
+   begin
+      Proc;
+
+      --  return to Destroyer
+   exception
+      when others =>
+         null;
+   end Run;
+
    -----------
    -- Start --
    -----------
@@ -183,39 +228,23 @@ package body Coroutines is
      (Runable    : Runable_Code;
       Stack_Size : System.Storage_Elements.Storage_Count)
    is
-      procedure Run (Code, Unused : System.Address) with Convention => C;
-
-      ---------
-      -- Run --
-      ---------
-
-      procedure Run (Code, Unused : System.Address) is
-         procedure Proc with Import, Address => Code;
-      begin
-         Proc;
-
-         --  return to Destroyer
-      exception
-         when others =>
-            null;
-      end Run;
-
       Prev  : constant Context := Current;
-      Next  : Context;
+      Next  : constant Context :=
+        create_context (Interfaces.C.int (Stack_Size));
    begin
-      Next := Allocate_Context
-        (Link       => Destroy,
-         Stack_Size => Interfaces.C.size_t (Stack_Size),
-         Wrapper    => Run'Address,
-         Code       => Runable.all'Address,
-         Argument   => System.Null_Address);
+      init_context
+        (Self     => Next,
+         Wrapper  => Run'Address,
+         Code     => Runable.all'Address,
+         Argument => System.Null_Address,
+         Cleanup  => Destroy);
 
       Total := Total + 1;
 
       if Prev = Main then
          --  Dont activate main context after Start
          Current := Next;
-         pragma Assert (swapcontext (Prev, Current) in 0);
+         swapcontext (Prev, Current);
       else
          declare
             Ready : Event_Id;
@@ -223,7 +252,7 @@ package body Coroutines is
             Manager.Get_Always_Ready_Event (Ready);
             Ready.Activate;
             Current := Next;
-            pragma Assert (swapcontext (Prev, Current) in 0);
+            swapcontext (Prev, Current);
             Ready.Deactivate;
          end;
       end if;
@@ -266,7 +295,7 @@ package body Coroutines is
       Current := Next_Context;
 
       if Prev /= Current then
-         pragma Assert (swapcontext (Prev, Current) in 0);
+         swapcontext (Prev, Current);
       end if;
 
       if Result /= null then

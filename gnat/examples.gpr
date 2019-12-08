@@ -3,7 +3,7 @@ with "coroutines";
 project Examples is
 
    for Source_Dirs use ("../examples");
-   for Object_Dir use "../.objs/examples/";
+   for Object_Dir use Coroutines'Object_Dir & "/examples/";
    for Main use ("timeout_test", "server_test", "cr_test");
 
    package Compiler is
@@ -11,4 +11,3 @@ project Examples is
    end Compiler;
 
 end Examples;
-

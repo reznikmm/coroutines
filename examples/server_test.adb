@@ -6,7 +6,6 @@
 
 with Server_Test_Proc;
 
-with Coroutines.Polling;
 with Coroutines.Timeouts;
 
 with TCP_Servers;
@@ -14,7 +13,6 @@ with TCP_Servers;
 procedure Server_Test is
 begin
    Coroutines.Initialize;
-   Coroutines.Polling.Initialize;
    Coroutines.Timeouts.Initialize;
 
    TCP_Servers.Listen_Port
