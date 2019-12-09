@@ -52,8 +52,7 @@ package body Coroutines is
    type Destroy_Stack_Type is record
       Stack         : Wide_Wide_String (1 .. 256);
       Stack_Pointer : System.Address;
-   end record;
-   pragma No_Component_Reordering (Destroy_Stack_Type);
+   end record with Convention => C;
 
    Destroy_Stack : Destroy_Stack_Type;  --  A stack for Destroy coroutine
    Main_SP       : aliased System.Address;  --  A stack pointer for Main coro

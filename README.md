@@ -3,6 +3,17 @@ Coroutines
 
 Coroutines is a library for non-preemptive multitasking in Ada
 
+## Install
+
+Run
+```
+make all install PREFIX=/path/to/install
+```
+
+### Dependencies
+
+This library requires Linux with X86_64 or ARM CPU.
+
 ## Usage
 Add `with "coroutines";` to your project file.
 

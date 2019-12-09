@@ -67,13 +67,16 @@ package body Coroutines.Polling is
    function Hash (Value : FD) return Ada.Containers.Hash_Type is
      (Ada.Containers.Hash_Type'Mod (Value));
 
-   pragma Warnings (Off);
    type epoll_event is record
       events : Interfaces.Unsigned_32;
       data   : Polling_Event_Access;
    end record
-     with Convention => C, Pack, Size => 12 * 8;
-   pragma Warnings (On);
+     with Convention => C, Size => 12 * 8, Alignment => 4;
+
+   for epoll_event use record
+      events at 0 range  0 .. 31;
+      data   at 4 range  64 - Long_Integer'Size .. 63;
+   end record;
 
    function epoll_ctl
      (epfd  : Interfaces.C.int;
@@ -83,7 +86,8 @@ package body Coroutines.Polling is
      with Import, Convention => C, External_Name => "epoll_ctl";
 
    type epoll_event_array is
-     array (Ada.Containers.Count_Type range <>) of epoll_event;
+     array (Ada.Containers.Count_Type range <>) of epoll_event
+       with Alignment => 4, Component_Size => 12 * 8;
 
    function epoll_wait
      (epfd      : Interfaces.C.int;

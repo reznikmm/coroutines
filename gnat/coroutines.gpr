@@ -7,8 +7,11 @@
 project Coroutines is
 
    Build_Dir := external ("BUILD", "../.objs");
+   type CPU_Kind is ("x86_64", "arm");
+   CPU : CPU_Kind := external ("CPU", "x86_64");
+
    for Languages use ("Ada", "C", "Asm");
-   for Source_Dirs use ("../source");
+   for Source_Dirs use ("../source", "../source/" & CPU);
    for Object_Dir use Build_Dir;
 
    package Compiler is
